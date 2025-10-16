@@ -266,7 +266,7 @@ $nombre_admin = $_SESSION['nombre'];
                 </div>
                 
                 <div class="stat-card">
-                    <div class="stat-icon"></div>
+                                        <div class="stat-icon"></div>
                     <div class="stat-number">1,234</div>
                     <div class="stat-label">Clientes Activos</div>
                 </div>
