@@ -10,6 +10,7 @@ if(isset($_SESSION['usuario'])) {
     }
     exit();
 }
+// klklklkllkklkl
 
 $error = '';
 
