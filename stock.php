@@ -190,7 +190,7 @@ session_start();
                         <img src="https://images.unsplash.com/photo-1434389677669-e08b4cac3105?w=500" alt="Vestido">
                     </div>
                     <div class="product-info">
-                        <h3>Vestido Elegante Negro</h3>
+                        <h3>Blusa de lana</h3>
                         <p class="product-price">$89.99</p>
                         <button class="btn-add-cart">Agregar al Carrito</button>
                     </div>
