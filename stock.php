@@ -145,7 +145,7 @@ session_start();
                         <img src="https://images.unsplash.com/photo-1620799140408-edc6dcb6d633?w=500" alt="Camisa">
                     </div>
                     <div class="product-info">
-                        <h3>Camisa de Lino</h3>
+                        <h3>Abrigo blanco</h3>
                         <p class="product-price">$64.99</p>
                         <button class="btn-add-cart">Agregar al Carrito</button>
                     </div>
