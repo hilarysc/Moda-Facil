@@ -168,7 +168,7 @@ session_start();
                         <span class="product-badge">Nuevo</span>
                     </div>
                     <div class="product-info">
-                        <h3>Blazer Oversize</h3>
+                        <h3>Vestido feo</h3>
                         <p class="product-price">$149.99</p>
                         <button class="btn-add-cart">Agregar al Carrito</button>
                     </div>
