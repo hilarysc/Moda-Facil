@@ -484,7 +484,8 @@ $total = $subtotal + $envio;
                         </div>
                         
                         <?php if(isset($_SESSION['usuario'])): ?>
-                            <a href="procesar_pago.php" class="btn-checkout">Proceder al Pago</a>
+                            <a href="procesar_pago.php
+                            " class="btn-checkout">Proceder al Pago</a>
                         <?php else: ?>
                             <a href="login.php" class="btn-checkout">Inicia Sesión para Comprar</a>
                         <?php endif; ?>
