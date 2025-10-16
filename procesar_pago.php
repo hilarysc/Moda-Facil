@@ -172,7 +172,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
         }
         
         .card-visual::before {
-            content: '💳';
+            content: '';
             position: absolute;
             font-size: 8rem;
             opacity: 0.1;
@@ -438,7 +438,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
                         
                         <?php if(isset($_SESSION['usuario'])): ?>
                             <li><a href="logout.php">Cerrar Sesión</a></li>
-                            <li class="user-info">👤 <?php echo $_SESSION['usuario']; ?></li>
+                            <li class="user-info"> <?php echo $_SESSION['usuario']; ?></li>
                         <?php else: ?>
                             <li><a href="login.php" class="btn-login">Login</a></li>
                         <?php endif; ?>
@@ -451,7 +451,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
     <!-- Payment Header -->
     <section class="payment-header">
         <div class="container">
-            <h1>💳 Procesar Pago</h1>
+            <h1> Procesar Pago</h1>
             <p style="font-family: 'Montserrat', sans-serif; font-size: 1.1rem;">Pago seguro y encriptado</p>
         </div>
     </section>
@@ -461,7 +461,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
         <div class="payment-container">
             <div class="payment-card">
                 <div class="security-banner">
-                    <span class="security-icon">🔒</span>
+                    <span class="security-icon"></span>
                     <div>
                         <strong>Pago 100% Seguro</strong><br>
                         <small>Tu información está protegida con encriptación SSL</small>
@@ -470,7 +470,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
 
                 <?php if($error_mensaje): ?>
                     <div class="error-message">
-                        ⚠️ <?php echo $error_mensaje; ?>
+                        <?php echo $error_mensaje; ?>
                     </div>
                 <?php endif; ?>
 
@@ -479,7 +479,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
                 <form method="POST" action="procesar_pago.php" id="paymentForm">
                     <!-- Verificación de Usuario -->
                     <div class="payment-section-title">
-                        📧 Verificación de Cuenta
+                        Verificación de Cuenta
                     </div>
                     
                     <div class="form-group">
@@ -505,12 +505,12 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
                     </div>
 
                     <div class="info-note">
-                        💡 <strong>Nota:</strong> Enviaremos la confirmación de tu pedido al correo electrónico proporcionado. Asegúrate de que sea correcto.
+                    <strong>Nota:</strong> Enviaremos la confirmación de tu pedido al correo electrónico proporcionado. Asegúrate de que sea correcto.
                     </div>
 
                     <!-- Información de Tarjeta -->
                     <div class="payment-section-title">
-                        💳 Datos de la Tarjeta
+                     Datos de la Tarjeta
                     </div>
 
                     <!-- Visualización de Tarjeta -->
@@ -603,7 +603,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
                     </div>
 
                     <button type="submit" name="procesar_pago" class="btn-pay">
-                        🔒 Pagar $<?php echo number_format($total, 2); ?>
+                         Pagar $<?php echo number_format($total, 2); ?>
                     </button>
 
                     <p style="text-align: center; margin-top: 20px; color: #666; font-size: 0.9rem;">
@@ -631,12 +631,12 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
             </div>
 
             <p style="margin: 20px 0; color: #666;">
-                📧 Hemos enviado la confirmación a:<br>
+                 Hemos enviado la confirmación a:<br>
                 <strong><?php echo isset($_SESSION['email_notificacion']) ? $_SESSION['email_notificacion'] : ''; ?></strong>
             </p>
 
             <p style="color: #666;">
-                🚚 Tiempo estimado de entrega: <strong>2-3 días hábiles</strong>
+                Tiempo estimado de entrega: <strong>2-3 días hábiles</strong>
             </p>
 
             <a href="clientes.php" class="btn-view-order-success">Ver Mis Pedidos</a>
