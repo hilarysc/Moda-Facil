@@ -224,7 +224,7 @@ session_start();
                         <img src="https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=500" alt="Camisa">
                     </div>
                     <div class="product-info">
-                        <h3>Camisa Clásica Blanca</h3>
+                        <h3>Chaqueta Marrón</h3>
                         <p class="product-price">$54.99</p>
                         <button class="btn-add-cart">Agregar al Carrito</button>
                     </div>
