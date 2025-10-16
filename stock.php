@@ -201,7 +201,7 @@ session_start();
                         <img src="https://images.unsplash.com/photo-1576566588028-4147f3842f27?w=500" alt="Suéter">
                     </div>
                     <div class="product-info">
-                        <h3>Suéter Cashmere</h3>
+                        <h3>Poloche otaku</h3>
                         <p class="product-price">$119.99</p>
                         <button class="btn-add-cart">Agregar al Carrito</button>
                     </div>
