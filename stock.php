@@ -235,7 +235,7 @@ session_start();
                         <img src="https://images.unsplash.com/photo-1617922001439-4a2e6562f328?w=500" alt="Blusa">
                     </div>
                     <div class="product-info">
-                        <h3>Blusa de Seda</h3>
+                        <h3>Vestido elegante</h3>
                         <p class="product-price">$69.99</p>
                         <button class="btn-add-cart">Agregar al Carrito</button>
                     </div>
