@@ -213,7 +213,7 @@ session_start();
                         <span class="product-badge sale">Oferta</span>
                     </div>
                     <div class="product-info">
-                        <h3>Jeans Skinny</h3>
+                        <h3>Chaqueta de cuero</h3>
                         <p class="product-price"><del>$79.99</del> $59.99</p>
                         <button class="btn-add-cart">Agregar al Carrito</button>
                     </div>
