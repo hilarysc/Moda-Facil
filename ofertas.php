@@ -111,7 +111,7 @@ session_start();
 
     <section class="offers-hero">
         <div class="container">
-            <h1>🔥 OFERTAS ESPECIALES</h1>
+            <h1> OFERTAS ESPECIALES</h1>
             <p style="font-size: 1.5rem;">Aprovecha descuentos de hasta 50%</p>
             <div class="countdown">
                 <div class="countdown-item">
