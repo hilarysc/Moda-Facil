@@ -1,25 +1,122 @@
 <?php
-session_start();
+require_once './db/conectiondb.php';
+verificarAdmin();
 
-if(!isset($_SESSION['usuario']) || $_SESSION['rol'] != 'administrador') {
-    header('Location: login.php');
-    exit();
+// Obtener productos con sus categorías desde la base de datos
+$stmt = $pdo->query("
+    SELECT p.*, c.nombre as categoria_nombre 
+    FROM productos p 
+    LEFT JOIN categorias c ON p.categoria_id = c.id 
+    WHERE p.activo = 1
+    ORDER BY p.id DESC
+");
+$productos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Obtener categorías para el formulario
+$categorias = $pdo->query("SELECT * FROM categorias WHERE activo = 1")->fetchAll(PDO::FETCH_ASSOC);
+
+// Calcular estadísticas desde la base de datos
+$total_productos = $pdo->query("SELECT COUNT(*) FROM productos WHERE activo = 1")->fetchColumn();
+$valor_inventario = $pdo->query("SELECT SUM(precio * stock) FROM productos WHERE activo = 1")->fetchColumn();
+$stock_bajo = $pdo->query("SELECT COUNT(*) FROM productos WHERE stock < 20 AND activo = 1")->fetchColumn();
+$total_categorias = $pdo->query("SELECT COUNT(*) FROM categorias WHERE activo = 1")->fetchColumn();
+
+$mensaje = '';
+$error = '';
+
+// AGREGAR NUEVO PRODUCTO
+if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['agregar_producto'])) {
+    $nombre = limpiarDato($_POST['nombre'] ?? '');
+    $descripcion = limpiarDato($_POST['descripcion'] ?? '');
+    $categoria_id = $_POST['categoria_id'] ?? null;
+    $precio = $_POST['precio'] ?? 0;
+    $stock = $_POST['stock'] ?? 0;
+    $imagen_url = limpiarDato($_POST['imagen_url'] ?? 'https://images.unsplash.com/photo-1445205170230-053b83016050?w=500');
+    
+    if($nombre && $precio && $stock) {
+        try {
+            $stmt = $pdo->prepare("
+                INSERT INTO productos (nombre, descripcion, categoria_id, precio, stock, imagen_url) 
+                VALUES (?, ?, ?, ?, ?, ?)
+            ");
+            $stmt->execute([$nombre, $descripcion, $categoria_id, $precio, $stock, $imagen_url]);
+            
+            registrarActividad($pdo, 'actualizacion', "Producto agregado: $nombre", $_SESSION['usuario_id']);
+            
+            header('Location: inventario.php?success=agregado');
+            exit();
+        } catch(PDOException $e) {
+            $error = 'Error al agregar producto: ' . $e->getMessage();
+        }
+    } else {
+        $error = 'Por favor complete todos los campos obligatorios';
+    }
 }
 
-// Datos de ejemplo del inventario
-$productos = [
-    ['id' => 1, 'nombre' => 'Blusa de lana', 'categoria' => 'Vestidos', 'precio' => 89.99, 'stock' => 45, 'imagen' => 'https://images.unsplash.com/photo-1434389677669-e08b4cac3105?w=200'],
-    ['id' => 2, 'nombre' => 'Chaqueta marrón', 'categoria' => 'Camisas', 'precio' => 54.99, 'stock' => 23, 'imagen' => 'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=200'],
-    ['id' => 3, 'nombre' => 'Pantalón de Vestir', 'categoria' => 'Pantalones', 'precio' => 59.99, 'stock' => 67, 'imagen' => 'https://images.unsplash.com/photo-1560243563-062bfc001d68?w=200'],
-    ['id' => 4, 'nombre' => 'Blazer Premium', 'categoria' => 'Blazers', 'precio' => 129.99, 'stock' => 34, 'imagen' => 'https://images.unsplash.com/photo-1594633312681-425c7b97ccd1?w=200'],
-    ['id' => 5, 'nombre' => 'Falda Plisada', 'categoria' => 'Faldas', 'precio' => 45.99, 'stock' => 12, 'imagen' => 'https://images.unsplash.com/photo-1583496661160-fb5886a0aaaa?w=200'],
-    ['id' => 6, 'nombre' => 'Poloche gato', 'categoria' => 'Suéteres', 'precio' => 89.99, 'stock' => 56, 'imagen' => 'https://images.unsplash.com/photo-1576566588028-4147f3842f27?w=200'],
-];
+// ELIMINAR PRODUCTO (Marcar como inactivo)
+if(isset($_GET['eliminar']) && is_numeric($_GET['eliminar'])) {
+    $id = $_GET['eliminar'];
+    try {
+        $stmt = $pdo->prepare("SELECT nombre FROM productos WHERE id = ?");
+        $stmt->execute([$id]);
+        $producto = $stmt->fetch();
+        
+        if($producto) {
+            $stmt = $pdo->prepare("UPDATE productos SET activo = 0 WHERE id = ?");
+            $stmt->execute([$id]);
+            
+            registrarActividad($pdo, 'actualizacion', "Producto eliminado: " . $producto['nombre'], $_SESSION['usuario_id']);
+            
+            header('Location: inventario.php?success=eliminado');
+            exit();
+        }
+    } catch(PDOException $e) {
+        $error = 'Error al eliminar producto';
+    }
+}
 
-// Manejar el registro de nuevos productos
-$mensaje = '';
-if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['agregar_producto'])) {
-    $mensaje = 'Producto agregado exitosamente';
+// EDITAR PRODUCTO
+if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['editar_producto'])) {
+    $id = $_POST['id'] ?? 0;
+    $nombre = limpiarDato($_POST['nombre'] ?? '');
+    $descripcion = limpiarDato($_POST['descripcion'] ?? '');
+    $categoria_id = $_POST['categoria_id'] ?? null;
+    $precio = $_POST['precio'] ?? 0;
+    $stock = $_POST['stock'] ?? 0;
+    $imagen_url = limpiarDato($_POST['imagen_url'] ?? '');
+    
+    if($id && $nombre && $precio) {
+        try {
+            $stmt = $pdo->prepare("
+                UPDATE productos 
+                SET nombre = ?, descripcion = ?, categoria_id = ?, precio = ?, stock = ?, imagen_url = ?
+                WHERE id = ?
+            ");
+            $stmt->execute([$nombre, $descripcion, $categoria_id, $precio, $stock, $imagen_url, $id]);
+            
+            registrarActividad($pdo, 'actualizacion', "Producto editado: $nombre", $_SESSION['usuario_id']);
+            
+            header('Location: inventario.php?success=editado');
+            exit();
+        } catch(PDOException $e) {
+            $error = 'Error al editar producto';
+        }
+    }
+}
+
+// Mensajes de éxito
+if(isset($_GET['success'])) {
+    switch($_GET['success']) {
+        case 'agregado':
+            $mensaje = 'Producto agregado exitosamente';
+            break;
+        case 'eliminado':
+            $mensaje = 'Producto eliminado exitosamente';
+            break;
+        case 'editado':
+            $mensaje = 'Producto actualizado exitosamente';
+            break;
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -28,383 +125,114 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['agregar_producto'])) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Inventario - Moda Fácil</title>
-    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="./inventario.css">
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Montserrat:wght@300;400;600&display=swap" rel="stylesheet">
-    <style>
-        .inventory-header {
-            background: linear-gradient(135deg, #000 0%, #2c2c2c 100%);
-            color: white;
-            padding: 60px 0;
-            text-align: center;
-        }
-        
-        .inventory-header h1 {
-            font-family: 'Playfair Display', serif;
-            font-size: 2.5rem;
-            margin-bottom: 10px;
-        }
-        
-        .inventory-controls {
-            padding: 40px 0;
-            background-color: #f5f5f5;
-        }
-        
-        .controls-container {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-        
-        .search-box {
-            flex: 1;
-            min-width: 300px;
-        }
-        
-        .search-box input {
-            width: 100%;
-            padding: 12px 20px;
-            border: 2px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 1rem;
-        }
-        
-        .btn-new-product {
-            background-color: #c9a961;
-            color: white;
-            padding: 12px 30px;
-            text-decoration: none;
-            font-weight: 600;
-            border-radius: 5px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            transition: all 0.3s ease;
-            display: inline-block;
-        }
-        
-        .btn-new-product:hover {
-            background-color: #000;
-            transform: translateY(-2px);
-        }
-        
-        .filter-buttons {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        
-        .filter-btn {
-            padding: 10px 20px;
-            border: 2px solid #000;
-            background: white;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s ease;
-        }
-        
-        .filter-btn:hover, .filter-btn.active {
-            background-color: #000;
-            color: white;
-        }
-        
-        .inventory-table-section {
-            padding: 60px 0;
-        }
-        
-        .inventory-table {
-            background: white;
-            border-radius: 10px;
-            overflow: hidden;
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-        }
-        
-        .inventory-table table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        .inventory-table th {
-            background-color: #000;
-            color: white;
-            padding: 20px;
-            text-align: left;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-size: 0.9rem;
-        }
-        
-        .inventory-table td {
-            padding: 20px;
-            border-bottom: 1px solid #e0e0e0;
-            vertical-align: middle;
-        }
-        
-        .inventory-table tr:hover {
-            background-color: #f9f9f9;
-        }
-        
-        .product-img {
-            width: 60px;
-            height: 60px;
-            object-fit: cover;
-            border-radius: 5px;
-        }
-        
-        .stock-badge {
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 0.85rem;
-            font-weight: 600;
-        }
-        
-        .stock-high {
-            background-color: #4caf50;
-            color: white;
-        }
-        
-        .stock-medium {
-            background-color: #ff9800;
-            color: white;
-        }
-        
-        .stock-low {
-            background-color: #f44336;
-            color: white;
-        }
-        
-        .action-buttons {
-            display: flex;
-            gap: 10px;
-        }
-        
-        .btn-action {
-            padding: 8px 15px;
-            border: none;
-            border-radius: 3px;
-            cursor: pointer;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 0.8rem;
-            transition: all 0.3s ease;
-        }
-        
-        .btn-edit {
-            background-color: #2196f3;
-            color: white;
-        }
-        
-        .btn-edit:hover {
-            background-color: #1976d2;
-        }
-        
-        .btn-delete {
-            background-color: #f44336;
-            color: white;
-        }
-        
-        .btn-delete:hover {
-            background-color: #d32f2f;
-        }
-        
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.7);
-            overflow-y: auto;
-        }
-        
-        .modal-content {
-            background-color: white;
-            margin: 50px auto;
-            padding: 40px;
-            width: 90%;
-            max-width: 600px;
-            border-radius: 10px;
-            position: relative;
-        }
-        
-        .close-modal {
-            position: absolute;
-            right: 20px;
-            top: 20px;
-            font-size: 2rem;
-            cursor: pointer;
-            color: #999;
-        }
-        
-        .close-modal:hover {
-            color: #000;
-        }
-        
-        .form-group {
-            margin-bottom: 25px;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 0.85rem;
-            letter-spacing: 1px;
-        }
-        
-        .form-group input,
-        .form-group select,
-        .form-group textarea {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 5px;
-            font-size: 1rem;
-            font-family: 'Montserrat', sans-serif;
-        }
-        
-        .form-group textarea {
-            resize: vertical;
-            min-height: 100px;
-        }
-        
-        .btn-submit {
-            width: 100%;
-            padding: 15px;
-            background-color: #000;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        .btn-submit:hover {
-            background-color: #c9a961;
-        }
-        
-        .success-message {
-            background-color: #4caf50;
-            color: white;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            text-align: center;
-        }
-        
-        .inventory-stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-bottom: 40px;
-        }
-        
-        .stat-box {
-            background: white;
-            padding: 25px;
-            border-radius: 10px;
-            text-align: center;
-            box-shadow: 0 3px 10px rgba(0,0,0,0.1);
-        }
-        
-        .stat-box h3 {
-            font-size: 2rem;
-            color: #000;
-            margin-bottom: 5px;
-        }
-        
-        .stat-box p {
-            color: #666;
-            font-size: 0.9rem;
-            text-transform: uppercase;
-        }
-    </style>
 </head>
 <body>
-    <!-- Header -->
+     <!-- Header -->
     <header class="header">
         <div class="container">
             <div class="header-content">
                 <div class="logo">
                     <h1>MODA FÁCIL</h1>
-                    <p class="tagline">Gestión de Inventario</p>
+                    <p class="tagline">Elegancia al alcance de todos</p>
                 </div>
                 <nav class="main-nav">
                     <ul>
                         <li><a href="index.php">Inicio</a></li>
-                        <li><a href="administrador.php">Panel Admin</a></li>
-                        <li><a href="inventario.php">Inventario</a></li>
-                        <li><a href="logout.php">Cerrar Sesión</a></li>
-                        <li class="user-info"> <?php echo $_SESSION['nombre']; ?></li>
+                        <?php if(isset($_SESSION['usuario']) && $_SESSION['rol'] == 'administrador'): ?>
+                            <li><a href="administrador.php">Administrador</a></li>
+                            <li><a href="inventario.php">Inventario</a></li>
+                        <?php elseif(isset($_SESSION['usuario']) && $_SESSION['rol'] == 'cliente'): ?>
+                            <li><a href="clientes.php">Mi Cuenta</a></li>
+                            <li><a href="ofertas.php">Ofertas</a></li>
+                            <li><a href="stock.php">Catálogo</a></li>
+                        <?php else: ?>
+                            <li><a href="ofertas.php">Ofertas</a></li>
+                            <li><a href="stock.php">Catálogo</a></li>
+                        <?php endif; ?>
+                        
+                        <?php if(isset($_SESSION['usuario'])): ?>
+                            <li><a href="logout.php">Cerrar Sesión</a></li>
+                            <li class="user-info"> <?php echo $_SESSION['usuario']; ?></li>
+                        <?php else: ?>
+                            <li><a href="login.php" class="btn-login">Login</a></li>
+                        <?php endif; ?>
                     </ul>
                 </nav>
             </div>
         </div>
     </header>
 
-    <!-- Inventory Header -->
+
     <section class="inventory-header">
         <div class="container">
-            <h1> Gestión de Inventario</h1>
+            <h1>📦 Gestión de Inventario</h1>
             <p>Control completo de productos y stock</p>
         </div>
     </section>
 
-    <!-- Inventory Controls -->
     <section class="inventory-controls">
         <div class="container">
             <?php if($mensaje): ?>
-                <div class="success-message"><?php echo $mensaje; ?></div>
+                <div class="success-message">✓ <?php echo htmlspecialchars($mensaje); ?></div>
+            <?php endif; ?>
+            <?php if($error): ?>
+                <div class="error-message">❌ <?php echo htmlspecialchars($error); ?></div>
             <?php endif; ?>
             
             <div class="controls-container">
                 <div class="search-box">
-                    <input type="text" placeholder=" Buscar productos..." id="searchInput">
+                    <input type="text" placeholder="🔍 Buscar productos..." id="searchInput">
                 </div>
                 
-                <a href="#" class="btn-new-product" onclick="openModal()"> Nuevo Producto</a>
+                <button class="btn-new-product" onclick="openModal()">➕ Nuevo Producto</button>
             </div>
         </div>
     </section>
 
-    <!-- Inventory Stats -->
     <section class="inventory-table-section">
         <div class="container">
             <div class="inventory-stats">
                 <div class="stat-box">
-                    <h3>237</h3>
+                    <h3><?php echo $total_productos; ?></h3>
                     <p>Total Productos</p>
                 </div>
                 <div class="stat-box">
-                    <h3>$67,890</h3>
+                    <h3>$<?php echo number_format($valor_inventario, 2); ?></h3>
                     <p>Valor Inventario</p>
                 </div>
                 <div class="stat-box">
-                    <h3>15</h3>
+                    <h3><?php echo $stock_bajo; ?></h3>
                     <p>Stock Bajo</p>
                 </div>
                 <div class="stat-box">
-                    <h3>45</h3>
+                    <h3><?php echo $total_categorias; ?></h3>
                     <p>Categorías</p>
                 </div>
             </div>
 
-         
             <div class="inventory-table">
                 <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Imagen</th>
+                            <th>Nombre</th>
+                            <th>Categoría</th>
+                            <th>Precio</th>
+                            <th>Stock</th>
+                            <th>Estado</th>
+                            <th>Acciones</th>
+                        </tr>
+                    </thead>
                     <tbody>
                         <?php foreach($productos as $producto): ?>
                         <tr>
                             <td>#<?php echo str_pad($producto['id'], 4, '0', STR_PAD_LEFT); ?></td>
-                            <td><img src="<?php echo $producto['imagen']; ?>" alt="<?php echo $producto['nombre']; ?>" class="product-img"></td>
-                            <td><strong><?php echo $producto['nombre']; ?></strong></td>
-                            <td><?php echo $producto['categoria']; ?></td>
+                            <td><img src="<?php echo htmlspecialchars($producto['imagen_url']); ?>" alt="<?php echo htmlspecialchars($producto['nombre']); ?>" class="product-img"></td>
+                            <td><strong><?php echo htmlspecialchars($producto['nombre']); ?></strong></td>
+                            <td><?php echo htmlspecialchars($producto['categoria_nombre'] ?? 'Sin categoría'); ?></td>
                             <td>$<?php echo number_format($producto['precio'], 2); ?></td>
                             <td><?php echo $producto['stock']; ?> unidades</td>
                             <td>
@@ -420,12 +248,22 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['agregar_producto'])) {
                             </td>
                             <td>
                                 <div class="action-buttons">
-
-                                    <button class="btn-action btn-delete" onclick="deleteProduct(<?php echo $producto['id']; ?>)">Eliminar</button>
+                                    <button class="btn-action btn-edit" onclick='editProduct(<?php echo json_encode($producto); ?>)'>Editar</button>
+                                    <a href="inventario.php?eliminar=<?php echo $producto['id']; ?>" 
+                                       class="btn-action btn-delete" 
+                                       onclick="return confirm('¿Está seguro de eliminar este producto?')">Eliminar</a>
                                 </div>
                             </td>
                         </tr>
                         <?php endforeach; ?>
+                        
+                        <?php if(empty($productos)): ?>
+                        <tr>
+                            <td colspan="8" style="text-align: center; padding: 40px; color: #999;">
+                                No hay productos en el inventario
+                            </td>
+                        </tr>
+                        <?php endif; ?>
                     </tbody>
                 </table>
             </div>
@@ -436,23 +274,39 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['agregar_producto'])) {
     <div id="productModal" class="modal">
         <div class="modal-content">
             <span class="close-modal" onclick="closeModal()">&times;</span>
-            <h2 style="font-family: 'Playfair Display', serif; margin-bottom: 30px;">Registrar Nuevo Producto</h2>
+            <h2 style="font-family: 'Playfair Display', serif; margin-bottom: 30px;" id="modalTitle">Registrar Nuevo Producto</h2>
             
-            <form method="POST" action="inventario.php">
+            <form method="POST" action="inventario.php" id="productForm">
+                <input type="hidden" name="id" id="producto_id">
+                
                 <div class="form-group">
-                    <label for="nombre">Nombre del Producto</label>
+                    <label for="nombre">Nombre del Producto *</label>
                     <input type="text" id="nombre" name="nombre" required>
                 </div>
                 
-                
                 <div class="form-group">
-                    <label for="precio">Precio ($)</label>
-                    <input type="number" id="precio" name="precio" step="0.01" required>
+                    <label for="categoria_id">Categoría</label>
+                    <select id="categoria_id" name="categoria_id">
+                        <option value="">Sin categoría</option>
+                        <?php foreach($categorias as $categoria): ?>
+                            <option value="<?php echo $categoria['id']; ?>"><?php echo htmlspecialchars($categoria['nombre']); ?></option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
                 
                 <div class="form-group">
-                    <label for="stock">Stock Inicial</label>
-                    <input type="number" id="stock" name="stock" required>
+                    <label for="precio">Precio ($) *</label>
+                    <input type="number" id="precio" name="precio" step="0.01" min="0" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="stock">Stock *</label>
+                    <input type="number" id="stock" name="stock" min="0" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="imagen_url">URL de Imagen</label>
+                    <input type="text" id="imagen_url" name="imagen_url" placeholder="https://...">
                 </div>
                 
                 <div class="form-group">
@@ -460,12 +314,11 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['agregar_producto'])) {
                     <textarea id="descripcion" name="descripcion"></textarea>
                 </div>
                 
-                <button type="submit" name="agregar_producto" class="btn-submit">Registrar Producto</button>
+                <button type="submit" name="agregar_producto" class="btn-submit" id="submitBtn">Registrar Producto</button>
             </form>
         </div>
     </div>
 
-    <!-- Footer -->
     <footer class="footer">
         <div class="container">
             <div class="footer-bottom">
@@ -477,30 +330,33 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['agregar_producto'])) {
     <script>
         function openModal() {
             document.getElementById('productModal').style.display = 'block';
+            document.getElementById('modalTitle').textContent = 'Registrar Nuevo Producto';
+            document.getElementById('productForm').reset();
+            document.getElementById('producto_id').value = '';
+            document.getElementById('submitBtn').name = 'agregar_producto';
+            document.getElementById('submitBtn').textContent = 'Registrar Producto';
         }
         
         function closeModal() {
             document.getElementById('productModal').style.display = 'none';
         }
         
-        function editProduct(id) {
-            alert('Editando producto ID: ' + id);
+        function editProduct(producto) {
+            document.getElementById('productModal').style.display = 'block';
+            document.getElementById('modalTitle').textContent = 'Editar Producto';
+            
+            document.getElementById('producto_id').value = producto.id;
+            document.getElementById('nombre').value = producto.nombre;
+            document.getElementById('categoria_id').value = producto.categoria_id || '';
+            document.getElementById('precio').value = producto.precio;
+            document.getElementById('stock').value = producto.stock;
+            document.getElementById('imagen_url').value = producto.imagen_url || '';
+            document.getElementById('descripcion').value = producto.descripcion || '';
+            
+            document.getElementById('submitBtn').name = 'editar_producto';
+            document.getElementById('submitBtn').textContent = 'Actualizar Producto';
         }
         
-        function deleteProduct(id) {
-            if(confirm('¿Estás seguro de que deseas eliminar este producto?')) {
-                alert('Producto ' + id + ' eliminado');
-            }
-        }
-        
-        function filterCategory(category) {
-            const buttons = document.querySelectorAll('.filter-btn');
-            buttons.forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
-            alert('Filtrando por: ' + category);
-        }
-        
-        // Cerrar modal al hacer clic fuera
         window.onclick = function(event) {
             const modal = document.getElementById('productModal');
             if (event.target == modal) {
@@ -508,7 +364,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['agregar_producto'])) {
             }
         }
         
-        // Búsqueda en tiempo real
         document.getElementById('searchInput').addEventListener('keyup', function() {
             const searchValue = this.value.toLowerCase();
             const rows = document.querySelectorAll('.inventory-table tbody tr');

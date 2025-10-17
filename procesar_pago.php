@@ -1,52 +1,297 @@
 <?php
 session_start();
+require_once './db/conectiondb.php';
 
 // Verificar que el usuario esté logueado
-if(!isset($_SESSION['usuario'])) {
+if(!isset($_SESSION['usuario_id'])) {
     header('Location: login.php');
     exit();
 }
 
-// Obtener datos del pedido desde la sesión
-$total = $_SESSION['total_pedido'] ?? 0;
-$subtotal = $_SESSION['subtotal_pedido'] ?? 0;
-$envio = $_SESSION['envio_pedido'] ?? 20.00;
-
-// Procesar el pago
+$usuario_id = $_SESSION['usuario_id'];
+$error_mensaje = '';
 $pago_exitoso = false;
 $numero_pedido = '';
-$error_mensaje = '';
 
+// Obtener datos del usuario
+try {
+    $stmt = $pdo->prepare("SELECT email, nombre FROM usuarios WHERE id = ?");
+    $stmt->execute([$usuario_id]);
+    $usuario = $stmt->fetch();
+} catch(PDOException $e) {
+    die('Error al obtener datos del usuario');
+}
+
+// Obtener tarjetas guardadas del usuario
+$tarjetas_guardadas = [];
+try {
+    $stmt = $pdo->prepare("
+        SELECT id, ultimos_digitos, nombre_titular, tipo_tarjeta 
+        FROM tarjetas_guardadas 
+        WHERE usuario_id = ? AND activa = 1
+        ORDER BY fecha_creacion DESC
+    ");
+    $stmt->execute([$usuario_id]);
+    $tarjetas_guardadas = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch(PDOException $e) {
+    // Tabla puede no existir aún
+    $tarjetas_guardadas = [];
+}
+
+// Obtener carrito del usuario
+try {
+    $stmt = $pdo->prepare("
+        SELECT c.id as carrito_id, c.cantidad,
+               p.id, p.precio, p.stock, p.nombre, p.es_oferta, p.precio_oferta
+        FROM carrito c
+        JOIN productos p ON c.producto_id = p.id
+        WHERE c.usuario_id = ? AND p.activo = 1
+    ");
+    $stmt->execute([$usuario_id]);
+    $items_carrito = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch(PDOException $e) {
+    $items_carrito = [];
+}
+
+if(empty($items_carrito)) {
+    header('Location: carrito.php');
+    exit();
+}
+
+// Calcular totales
+$subtotal = 0;
+foreach($items_carrito as $item) {
+    $precio = $item['es_oferta'] ? $item['precio_oferta'] : $item['precio'];
+    $subtotal += $precio * $item['cantidad'];
+}
+$envio = $subtotal > 200 ? 0 : 20;
+$total = $subtotal + $envio;
+
+// Procesar el pago
 if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
-    // Validar datos del formulario
-    $email = $_POST['email'] ?? '';
+    $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
-    $numero_tarjeta = $_POST['numero_tarjeta'] ?? '';
-    $nombre_tarjeta = $_POST['nombre_tarjeta'] ?? '';
+    $numero_tarjeta = preg_replace('/\s/', '', $_POST['numero_tarjeta'] ?? '');
+    $nombre_tarjeta = trim($_POST['nombre_tarjeta'] ?? '');
     $fecha_expiracion = $_POST['fecha_expiracion'] ?? '';
     $cvv = $_POST['cvv'] ?? '';
+    $guardar_tarjeta = isset($_POST['guardar_tarjeta']) ? 1 : 0;
+    $usar_tarjeta_guardada = $_POST['usar_tarjeta_guardada'] ?? '';
     
     // Validaciones básicas
     if(empty($email) || empty($password)) {
         $error_mensaje = 'Por favor ingresa tu email y contraseña';
-    } elseif(empty($numero_tarjeta) || empty($nombre_tarjeta) || empty($fecha_expiracion) || empty($cvv)) {
-        $error_mensaje = 'Por favor completa todos los datos de la tarjeta';
     } else {
-        // Aquí iría la validación con la base de datos y procesamiento real del pago
-        // Por ahora simulamos un pago exitoso
+        // Verificar contraseña
+        $stmt_user = $pdo->prepare("SELECT password FROM usuarios WHERE id = ?");
+        $stmt_user->execute([$usuario_id]);
+        $user_data = $stmt_user->fetch();
         
-        $numero_pedido = 'MF-' . date('Y') . '-' . str_pad(rand(1, 999), 3, '0', STR_PAD_LEFT);
-        $_SESSION['ultimo_pedido'] = $numero_pedido;
-        $_SESSION['email_notificacion'] = $email;
-        
-        // Aquí se enviaría el email con la información del pedido
-        // mail($email, "Confirmación de Pedido", "Tu pedido ha sido procesado...");
-        
-        $pago_exitoso = true;
-        
-        // Limpiar carrito
-        $_SESSION['carrito'] = [];
+        if(!password_verify($password, $user_data['password'])) {
+            $error_mensaje = 'Contraseña incorrecta';
+        } else if(empty($numero_tarjeta) || empty($nombre_tarjeta) || empty($fecha_expiracion) || empty($cvv)) {
+            $error_mensaje = 'Por favor completa todos los datos de la tarjeta';
+        } else {
+            // Validar que haya stock disponible
+            $stock_disponible = true;
+            foreach($items_carrito as $item) {
+                if($item['stock'] < $item['cantidad']) {
+                    $stock_disponible = false;
+                    $error_mensaje = 'Stock insuficiente para ' . $item['nombre'];
+                    break;
+                }
+            }
+            
+            if($stock_disponible) {
+                try {
+                    // Iniciar transacción
+                    $pdo->beginTransaction();
+                    
+                    // Generar número de pedido
+                    $numero_pedido = 'MF-' . date('Y') . '-' . str_pad(mt_rand(10000, 99999), 5, '0', STR_PAD_LEFT);
+                    
+                    // Crear pedido
+                    $stmt = $pdo->prepare("
+                        INSERT INTO pedidos (numero_pedido, usuario_id, total, estado, metodo_pago, direccion_envio)
+                        VALUES (?, ?, ?, 'pendiente', 'Tarjeta de Crédito', ?)
+                    ");
+                    $stmt->execute([$numero_pedido, $usuario_id, $total, 'Pedido procesado en línea']);
+                    $pedido_id = $pdo->lastInsertId();
+                    
+                    // Registrar detalles del pedido y restar stock
+                    foreach($items_carrito as $item) {
+                        $precio_venta = $item['es_oferta'] ? $item['precio_oferta'] : $item['precio'];
+                        $subtotal_item = $precio_venta * $item['cantidad'];
+                        
+                        // Insertar detalle del pedido
+                        $stmt = $pdo->prepare("
+                            INSERT INTO pedido_detalles (pedido_id, producto_id, cantidad, precio_unitario, subtotal)
+                            VALUES (?, ?, ?, ?, ?)
+                        ");
+                        $stmt->execute([$pedido_id, $item['id'], $item['cantidad'], $precio_venta, $subtotal_item]);
+                        
+                        // Restar del stock
+                        $stmt = $pdo->prepare("
+                            UPDATE productos 
+                            SET stock = stock - ? 
+                            WHERE id = ?
+                        ");
+                        $stmt->execute([$item['cantidad'], $item['id']]);
+                    }
+                    
+                    // Guardar tarjeta si lo solicita
+                    if($guardar_tarjeta) {
+                        $ultimos_digitos = substr($numero_tarjeta, -4);
+                        $stmt = $pdo->prepare("
+                            INSERT INTO tarjetas_guardadas (usuario_id, numero_tarjeta_encriptado, ultimos_digitos, nombre_titular, tipo_tarjeta, activa)
+                            VALUES (?, ?, ?, ?, 'Crédito', 1)
+                        ");
+                        // En producción, encriptar el número de tarjeta
+                        $tarjeta_encriptada = password_hash($numero_tarjeta, PASSWORD_DEFAULT);
+                        $stmt->execute([$usuario_id, $tarjeta_encriptada, $ultimos_digitos, $nombre_tarjeta]);
+                    }
+                    
+                    // Vaciar carrito
+                    $stmt = $pdo->prepare("DELETE FROM carrito WHERE usuario_id = ?");
+                    $stmt->execute([$usuario_id]);
+                    
+                    // Registrar actividad
+                    registrarActividad($pdo, 'venta', "Pedido procesado: $numero_pedido - Total: \$$total", $usuario_id, $pedido_id);
+                    
+                    // Confirmar transacción
+                    $pdo->commit();
+                    
+                    // Enviar email de confirmación
+                    $asunto = "Confirmación de Pedido - Moda Fácil";
+                    $mensaje_html = generarEmailConfirmacion($numero_pedido, $usuario['nombre'], $items_carrito, $subtotal, $envio, $total);
+                    
+                    if(enviarEmail($usuario['email'], $asunto, $mensaje_html)) {
+                        registrarActividad($pdo, 'venta', "Email de confirmación enviado a: " . $usuario['email'], $usuario_id, $pedido_id);
+                    }
+                    
+                    $pago_exitoso = true;
+                    $_SESSION['ultimo_pedido'] = $numero_pedido;
+                    
+                } catch(PDOException $e) {
+                    $pdo->rollBack();
+                    error_log("Error al procesar pago: " . $e->getMessage());
+                    $error_mensaje = 'Error al procesar el pago. Intenta nuevamente.';
+                }
+            }
+        }
     }
+}
+
+// Función para enviar email
+function enviarEmail($destinatario, $asunto, $mensaje_html) {
+    $headers = "MIME-Version: 1.0" . "\r\n";
+    $headers .= "Content-type: text/html; charset=UTF-8" . "\r\n";
+    $headers .= "From: noreply@modafacil.com" . "\r\n";
+    
+    return mail($destinatario, $asunto, $mensaje_html, $headers);
+}
+
+// Función para generar email de confirmación
+function generarEmailConfirmacion($numero_pedido, $nombre_cliente, $items, $subtotal, $envio, $total) {
+    $detalles_productos = '';
+    foreach($items as $item) {
+        $precio = $item['es_oferta'] ? $item['precio_oferta'] : $item['precio'];
+        $detalles_productos .= "
+            <tr>
+                <td style='padding: 10px; border-bottom: 1px solid #eee;'>{$item['nombre']}</td>
+                <td style='padding: 10px; border-bottom: 1px solid #eee; text-align: center;'>{$item['cantidad']}</td>
+                <td style='padding: 10px; border-bottom: 1px solid #eee; text-align: right;'>\${$precio}</td>
+                <td style='padding: 10px; border-bottom: 1px solid #eee; text-align: right;'>\$" . number_format($precio * $item['cantidad'], 2) . "</td>
+            </tr>
+        ";
+    }
+    
+    $html = "
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset='UTF-8'>
+        <style>
+            body { font-family: Arial, sans-serif; background-color: #f5f5f5; }
+            .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }
+            .header { background: linear-gradient(135deg, #000 0%, #2c2c2c 100%); color: white; padding: 20px; text-align: center; border-radius: 5px; margin-bottom: 30px; }
+            .header h1 { margin: 0; font-size: 2em; }
+            .section-title { background-color: #f9f9f9; padding: 15px; margin: 20px 0 10px 0; border-left: 4px solid #c9a961; font-weight: bold; }
+            table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+            .total-section { background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            .total-row { display: flex; justify-content: space-between; padding: 10px 0; }
+            .total-final { font-size: 1.5em; font-weight: bold; color: #000; border-top: 2px solid #000; padding-top: 10px; }
+            .footer { background-color: #f5f5f5; padding: 20px; text-align: center; margin-top: 30px; border-radius: 5px; color: #666; font-size: 0.9em; }
+        </style>
+    </head>
+    <body>
+        <div class='container'>
+            <div class='header'>
+                <h1>¡Pedido Confirmado!</h1>
+                <p>Tu compra ha sido procesada exitosamente</p>
+            </div>
+            
+            <p>Hola <strong>$nombre_cliente</strong>,</p>
+            <p>Gracias por tu compra en Moda Fácil. Tu pedido ha sido confirmado y está siendo preparado.</p>
+            
+            <div class='section-title'>Número de Orden</div>
+            <p style='font-size: 1.2em; color: #c9a961;'><strong>$numero_pedido</strong></p>
+            
+            <div class='section-title'>Productos Pedidos</div>
+            <table>
+                <thead>
+                    <tr style='background-color: #f9f9f9;'>
+                        <th style='padding: 10px; text-align: left;'>Producto</th>
+                        <th style='padding: 10px; text-align: center;'>Cantidad</th>
+                        <th style='padding: 10px; text-align: right;'>Precio</th>
+                        <th style='padding: 10px; text-align: right;'>Subtotal</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    $detalles_productos
+                </tbody>
+            </table>
+            
+            <div class='total-section'>
+                <div class='total-row'>
+                    <span>Subtotal:</span>
+                    <span>\$" . number_format($subtotal, 2) . "</span>
+                </div>
+                <div class='total-row'>
+                    <span>Envío:</span>
+                    <span>" . ($envio == 0 ? 'GRATIS' : '\$' . number_format($envio, 2)) . "</span>
+                </div>
+                <div class='total-row total-final'>
+                    <span>TOTAL:</span>
+                    <span>\$" . number_format($total, 2) . "</span>
+                </div>
+            </div>
+            
+            <div class='section-title'>Información de Entrega</div>
+            <p>
+                <strong>Tiempo de entrega estimado:</strong> 2-3 días hábiles<br>
+                <strong>Método de envío:</strong> Envío a domicilio<br>
+                <strong>Tracking:</strong> Te enviaremos un email con el número de rastreo pronto
+            </p>
+            
+            <div class='section-title'>¿Necesitas Ayuda?</div>
+            <p>
+                Si tienes alguna pregunta sobre tu pedido, no dudes en contactarnos:<br>
+                <strong>Email:</strong> soporte@modafacil.com<br>
+                <strong>Teléfono:</strong> +1 (809) 555-0123<br>
+                <strong>Horario:</strong> Lunes a Viernes, 9:00 AM - 5:00 PM
+            </p>
+            
+            <div class='footer'>
+                <p>&copy; 2025 Moda Fácil. Todos los derechos reservados.</p>
+                <p>Este es un email automático, por favor no responda directamente.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    ";
+    
+    return $html;
 }
 ?>
 <!DOCTYPE html>
@@ -77,7 +322,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
         }
         
         .payment-container {
-            max-width: 800px;
+            max-width: 900px;
             margin: 0 auto;
         }
         
@@ -92,25 +337,64 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
             font-family: 'Playfair Display', serif;
             font-size: 2rem;
             margin-bottom: 30px;
-            text-align: center;
             color: #000;
         }
         
-        .security-banner {
-            background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);
-            color: white;
-            padding: 20px;
+        .saved-cards-section {
+            background-color: #f9f9f9;
+            padding: 25px;
             border-radius: 10px;
-            margin-bottom: 40px;
-            text-align: center;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 15px;
+            margin-bottom: 30px;
+            border-left: 4px solid #4caf50;
         }
         
-        .security-icon {
-            font-size: 2rem;
+        .saved-cards-title {
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #000;
+        }
+        
+        .saved-card {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+        
+        .saved-card:hover {
+            border-color: #c9a961;
+            box-shadow: 0 3px 10px rgba(201, 169, 97, 0.2);
+        }
+        
+        .saved-card input[type="radio"] {
+            margin-right: 10px;
+        }
+        
+        .or-divider {
+            text-align: center;
+            margin: 30px 0;
+            position: relative;
+        }
+        
+        .or-divider::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: #e0e0e0;
+        }
+        
+        .or-divider span {
+            background: white;
+            padding: 0 15px;
+            position: relative;
+            color: #999;
+            font-weight: 600;
         }
         
         .payment-section-title {
@@ -137,7 +421,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
             letter-spacing: 0.5px;
         }
         
-        .form-group input {
+        .form-group input, .form-group select {
             width: 100%;
             padding: 15px;
             border: 2px solid #e0e0e0;
@@ -147,7 +431,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
             transition: all 0.3s ease;
         }
         
-        .form-group input:focus {
+        .form-group input:focus, .form-group select:focus {
             outline: none;
             border-color: #1a237e;
             box-shadow: 0 0 0 4px rgba(26, 35, 126, 0.1);
@@ -159,70 +443,33 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
             gap: 20px;
         }
         
-        .card-visual {
-            background: linear-gradient(135deg, #1a237e 0%, #0d47a1 100%);
-            padding: 30px;
-            border-radius: 15px;
-            color: white;
-            margin-bottom: 30px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-            min-height: 200px;
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .card-visual::before {
-            content: '';
-            position: absolute;
-            font-size: 8rem;
-            opacity: 0.1;
-            right: -20px;
-            top: 50%;
-            transform: translateY(-50%);
-        }
-        
-        .card-chip {
-            width: 50px;
-            height: 40px;
-            background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        
-        .card-number {
-            font-size: 1.5rem;
-            letter-spacing: 4px;
-            margin: 20px 0;
-            font-family: 'Courier New', monospace;
-        }
-        
-        .card-info {
+        .checkbox-group {
             display: flex;
-            justify-content: space-between;
-            margin-top: 20px;
+            align-items: center;
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #e3f2fd;
+            border-radius: 8px;
+            border-left: 4px solid #2196f3;
         }
         
-        .card-holder {
-            font-size: 0.9rem;
-            opacity: 0.8;
-            text-transform: uppercase;
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+            margin-right: 10px;
+            cursor: pointer;
         }
         
-        .card-holder-name {
-            font-size: 1.1rem;
-            margin-top: 5px;
-            font-weight: 600;
-        }
-        
-        .card-expiry {
-            text-align: right;
+        .checkbox-group label {
+            margin: 0;
+            cursor: pointer;
+            font-weight: 500;
         }
         
         .order-summary {
             background-color: #f9f9f9;
             padding: 25px;
             border-radius: 10px;
-            margin-top: 30px;
+            margin: 30px 0;
             border-left: 5px solid #1a237e;
         }
         
@@ -264,10 +511,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
             box-shadow: 0 10px 40px rgba(26, 35, 126, 0.4);
         }
         
-        .btn-pay:active {
-            transform: translateY(-1px);
-        }
-        
         .error-message {
             background-color: #f44336;
             color: white;
@@ -278,29 +521,16 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
             font-weight: 600;
         }
         
-        .payment-icons {
-            display: flex;
-            justify-content: center;
-            gap: 20px;
-            margin-top: 20px;
-            opacity: 0.6;
-        }
-        
-        .payment-icon {
-            font-size: 2.5rem;
-        }
-        
         .info-note {
             background-color: #e3f2fd;
             border-left: 4px solid #2196f3;
             padding: 15px;
             border-radius: 5px;
-            margin-top: 20px;
+            margin: 20px 0;
             font-size: 0.9rem;
             color: #1565c0;
         }
         
-        /* Modal de Éxito */
         .success-modal {
             display: none;
             position: fixed;
@@ -328,14 +558,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
         }
         
         @keyframes zoomIn {
-            from {
-                opacity: 0;
-                transform: scale(0.8);
-            }
-            to {
-                opacity: 1;
-                transform: scale(1);
-            }
+            from { opacity: 0; transform: scale(0.8); }
+            to { opacity: 1; transform: scale(1); }
         }
         
         .success-checkmark {
@@ -349,12 +573,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
             font-size: 4rem;
             color: white;
             margin: 0 auto 30px;
-            animation: bounce 1s ease;
-        }
-        
-        @keyframes bounce {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.1); }
         }
         
         .success-content h2 {
@@ -376,10 +594,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
             margin: 10px 0;
             font-size: 1rem;
             color: #333;
-        }
-        
-        .success-details strong {
-            color: #000;
         }
         
         .btn-view-order-success {
@@ -429,18 +643,11 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
                 <nav class="main-nav">
                     <ul>
                         <li><a href="index.php">Inicio</a></li>
-                        <?php if(isset($_SESSION['usuario']) && $_SESSION['rol'] == 'administrador'): ?>
-                            <li><a href="administrador.php">Administrador</a></li>
-                        <?php elseif(isset($_SESSION['usuario']) && $_SESSION['rol'] == 'cliente'): ?>
-                            <li><a href="clientes.php">Mi Cuenta</a></li>
-                            <li><a href="stock.php">Catálogo</a></li>
-                        <?php endif; ?>
-                        
+                        <li><a href="stock.php">Catálogo</a></li>
+                        <li><a href="carrito.php">Carrito</a></li>
                         <?php if(isset($_SESSION['usuario'])): ?>
                             <li><a href="logout.php">Cerrar Sesión</a></li>
-                            <li class="user-info"> <?php echo $_SESSION['usuario']; ?></li>
-                        <?php else: ?>
-                            <li><a href="login.php" class="btn-login">Login</a></li>
+                            <li class="user-info"><?php echo htmlspecialchars($_SESSION['usuario']); ?></li>
                         <?php endif; ?>
                     </ul>
                 </nav>
@@ -451,7 +658,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
     <!-- Payment Header -->
     <section class="payment-header">
         <div class="container">
-            <h1> Procesar Pago</h1>
+            <h1>Procesar Pago</h1>
             <p style="font-family: 'Montserrat', sans-serif; font-size: 1.1rem;">Pago seguro y encriptado</p>
         </div>
     </section>
@@ -460,27 +667,34 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
     <section class="payment-section">
         <div class="payment-container">
             <div class="payment-card">
-                <div class="security-banner">
-                    <span class="security-icon"></span>
-                    <div>
-                        <strong>Pago 100% Seguro</strong><br>
-                        <small>Tu información está protegida con encriptación SSL</small>
-                    </div>
-                </div>
-
                 <?php if($error_mensaje): ?>
-                    <div class="error-message">
-                        <?php echo $error_mensaje; ?>
-                    </div>
+                    <div class="error-message"><?php echo htmlspecialchars($error_mensaje); ?></div>
                 <?php endif; ?>
 
                 <h2>Información de Pago</h2>
 
                 <form method="POST" action="procesar_pago.php" id="paymentForm">
-                    <!-- Verificación de Usuario -->
-                    <div class="payment-section-title">
-                        Verificación de Cuenta
+                    <!-- Tarjetas Guardadas -->
+                    <?php if(!empty($tarjetas_guardadas)): ?>
+                    <div class="saved-cards-section">
+                        <div class="saved-cards-title">💳 Tarjetas Guardadas</div>
+                        <?php foreach($tarjetas_guardadas as $tarjeta): ?>
+                        <div class="saved-card">
+                            <input type="radio" name="usar_tarjeta_guardada" value="<?php echo $tarjeta['id']; ?>" id="tarjeta_<?php echo $tarjeta['id']; ?>">
+                            <label for="tarjeta_<?php echo $tarjeta['id']; ?>" style="display: inline; margin: 0;">
+                                <strong><?php echo htmlspecialchars($tarjeta['tipo_tarjeta']); ?></strong> terminada en 
+                                <strong><?php echo htmlspecialchars($tarjeta['ultimos_digitos']); ?></strong> 
+                                - <?php echo htmlspecialchars($tarjeta['nombre_titular']); ?>
+                            </label>
+                        </div>
+                        <?php endforeach; ?>
                     </div>
+                    
+                    <div class="or-divider"><span>O</span></div>
+                    <?php endif; ?>
+
+                    <!-- Verificación de Usuario -->
+                    <div class="payment-section-title">Verificación de Cuenta</div>
                     
                     <div class="form-group">
                         <label for="email">Correo Electrónico *</label>
@@ -488,6 +702,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
                             type="email" 
                             id="email" 
                             name="email" 
+                            value="<?php echo htmlspecialchars($usuario['email']); ?>"
                             placeholder="correo@ejemplo.com"
                             required
                         >
@@ -504,30 +719,8 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
                         >
                     </div>
 
-                    <div class="info-note">
-                    <strong>Nota:</strong> Enviaremos la confirmación de tu pedido al correo electrónico proporcionado. Asegúrate de que sea correcto.
-                    </div>
-
-                    <!-- Información de Tarjeta -->
-                    <div class="payment-section-title">
-                     Datos de la Tarjeta
-                    </div>
-
-                    <!-- Visualización de Tarjeta -->
-                    <div class="card-visual">
-                        <div class="card-chip"></div>
-                        <div class="card-number" id="cardDisplay">•••• •••• •••• ••••</div>
-                        <div class="card-info">
-                            <div>
-                                <div class="card-holder">TITULAR</div>
-                                <div class="card-holder-name" id="nameDisplay">NOMBRE APELLIDO</div>
-                            </div>
-                            <div class="card-expiry">
-                                <div class="card-holder">VALIDA HASTA</div>
-                                <div class="card-holder-name" id="expiryDisplay">MM/AA</div>
-                            </div>
-                        </div>
-                    </div>
+                    <!-- Datos de Tarjeta Nueva -->
+                    <div class="payment-section-title">Datos de la Tarjeta</div>
 
                     <div class="form-group">
                         <label for="numero_tarjeta">Número de Tarjeta *</label>
@@ -579,10 +772,13 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
                         </div>
                     </div>
 
-                    <div class="payment-icons">
-                        <span class="payment-icon">💳</span>
-                        <span class="payment-icon">🏦</span>
-                        <span class="payment-icon">✓</span>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="guardar_tarjeta" name="guardar_tarjeta" value="1">
+                        <label for="guardar_tarjeta">Guardar esta tarjeta para próximas compras</label>
+                    </div>
+
+                    <div class="info-note">
+                        <strong>Nota:</strong> Tu información de tarjeta está encriptada y protegida. Nunca compartiremos tus datos con terceros.
                     </div>
 
                     <!-- Resumen del Pedido -->
@@ -594,7 +790,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
                         </div>
                         <div class="summary-row">
                             <span>Envío:</span>
-                            <span>$<?php echo number_format($envio, 2); ?></span>
+                            <span><?php echo ($envio == 0 ? 'GRATIS' : ' . number_format($envio, 2)'); ?></span>
                         </div>
                         <div class="summary-row total">
                             <span>Total a Pagar:</span>
@@ -603,7 +799,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
                     </div>
 
                     <button type="submit" name="procesar_pago" class="btn-pay">
-                         Pagar $<?php echo number_format($total, 2); ?>
+                        Pagar $<?php echo number_format($total, 2); ?>
                     </button>
 
                     <p style="text-align: center; margin-top: 20px; color: #666; font-size: 0.9rem;">
@@ -614,7 +810,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
         </div>
     </section>
 
-    <!-- Success Modal -->
+   <!-- Success Modal -->
     <div class="success-modal <?php echo $pago_exitoso ? 'active' : ''; ?>" id="successModal">
         <div class="success-content">
             <div class="success-checkmark">✓</div>
@@ -624,19 +820,19 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
             </p>
 
             <div class="success-details">
-                <p><strong>Número de Orden:</strong> <?php echo $numero_pedido; ?></p>
+                <p><strong>Número de Orden:</strong> <?php echo htmlspecialchars($numero_pedido); ?></p>
                 <p><strong>Total Pagado:</strong> $<?php echo number_format($total, 2); ?></p>
-                <p><strong>Método de Pago:</strong> Tarjeta de Crédito</p>
-                <p><strong>Estado:</strong> <span style="color: #4caf50;">Confirmado</span></p>
+                <p><strong>Email de Confirmación:</strong> <?php echo htmlspecialchars($usuario['email']); ?></p>
+                <p><strong>Estado:</strong> <span style="color: #4caf50;">✓ Confirmado</span></p>
             </div>
 
             <p style="margin: 20px 0; color: #666;">
-                 Hemos enviado la confirmación a:<br>
-                <strong><?php echo isset($_SESSION['email_notificacion']) ? $_SESSION['email_notificacion'] : ''; ?></strong>
+                <strong>Hemos enviado la confirmación a tu correo</strong><br>
+                Revisa tu bandeja de entrada y carpeta de spam
             </p>
 
             <p style="color: #666;">
-                Tiempo estimado de entrega: <strong>2-3 días hábiles</strong>
+                <strong>Tiempo estimado de entrega:</strong> 2-3 días hábiles
             </p>
 
             <a href="clientes.php" class="btn-view-order-success">Ver Mis Pedidos</a>
@@ -649,59 +845,112 @@ if($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['procesar_pago'])) {
     <footer class="footer">
         <div class="container">
             <div class="footer-bottom">
-                <p>&copy; 2025 Moda Fácil. Todos los derechos reservados. Desarrollado en 2025.</p>
+                <p>&copy; 2025 Moda Fácil. Todos los derechos reservados.</p>
             </div>
         </div>
     </footer>
 
     <script>
+        // Verificar que los elementos existan antes de acceder a ellos
+        const numeroTarjetaElement = document.getElementById('numero_tarjeta');
+        const cvvElement = document.getElementById('cvv');
+        const fechaExpiracionElement = document.getElementById('fecha_expiracion');
+        const paymentFormElement = document.getElementById('paymentForm');
+
         // Formatear número de tarjeta
-        document.getElementById('numero_tarjeta').addEventListener('input', function(e) {
-            let value = e.target.value.replace(/\s/g, '');
-            let formattedValue = value.match(/.{1,4}/g)?.join(' ') || value;
-            e.target.value = formattedValue;
-            
-            // Actualizar visualización
-            document.getElementById('cardDisplay').textContent = formattedValue || '•••• •••• •••• ••••';
-        });
-
-        // Actualizar nombre en tarjeta
-        document.getElementById('nombre_tarjeta').addEventListener('input', function(e) {
-            document.getElementById('nameDisplay').textContent = e.target.value.toUpperCase() || 'NOMBRE APELLIDO';
-        });
-
-        // Formatear fecha de expiración
-        document.getElementById('fecha_expiracion').addEventListener('input', function(e) {
-            let value = e.target.value.replace(/\D/g, '');
-            if (value.length >= 2) {
-                value = value.slice(0, 2) + '/' + value.slice(2, 4);
-            }
-            e.target.value = value;
-            document.getElementById('expiryDisplay').textContent = value || 'MM/AA';
-        });
+        if(numeroTarjetaElement) {
+            numeroTarjetaElement.addEventListener('input', function(e) {
+                let value = e.target.value.replace(/\s/g, '');
+                let formattedValue = value.match(/.{1,4}/g)?.join(' ') || value;
+                e.target.value = formattedValue;
+            });
+        }
 
         // Solo números en CVV
-        document.getElementById('cvv').addEventListener('input', function(e) {
-            e.target.value = e.target.value.replace(/\D/g, '');
-        });
+        if(cvvElement) {
+            cvvElement.addEventListener('input', function(e) {
+                e.target.value = e.target.value.replace(/\D/g, '');
+            });
+        }
+
+        // Formatear fecha de expiración
+        if(fechaExpiracionElement) {
+            fechaExpiracionElement.addEventListener('input', function(e) {
+                let value = e.target.value.replace(/\D/g, '');
+                if (value.length >= 2) {
+                    value = value.slice(0, 2) + '/' + value.slice(2, 4);
+                }
+                e.target.value = value;
+            });
+        }
 
         // Validación del formulario
-        document.getElementById('paymentForm').addEventListener('submit', function(e) {
-            const numeroTarjeta = document.getElementById('numero_tarjeta').value.replace(/\s/g, '');
-            const cvv = document.getElementById('cvv').value;
-            
-            if(numeroTarjeta.length < 13 || numeroTarjeta.length > 19) {
-                e.preventDefault();
-                alert('Número de tarjeta inválido');
-                return false;
-            }
-            
-            if(cvv.length < 3 || cvv.length > 4) {
-                e.preventDefault();
-                alert('CVV inválido');
-                return false;
-            }
+        if(paymentFormElement) {
+            paymentFormElement.addEventListener('submit', function(e) {
+                const numeroTarjeta = document.getElementById('numero_tarjeta').value.replace(/\s/g, '');
+                const cvv = document.getElementById('cvv').value;
+                const usarGuardada = document.querySelector('input[name="usar_tarjeta_guardada"]:checked');
+                
+                // Si no usa tarjeta guardada, validar los datos
+                if(!usarGuardada) {
+                    if(numeroTarjeta.length < 13 || numeroTarjeta.length > 19) {
+                        e.preventDefault();
+                        alert('Número de tarjeta inválido (13-19 dígitos)');
+                        return false;
+                    }
+                    
+                    if(cvv.length < 3 || cvv.length > 4) {
+                        e.preventDefault();
+                        alert('CVV inválido (3-4 dígitos)');
+                        return false;
+                    }
+                }
+            });
+        }
+
+        // Mostrar/ocultar campos de tarjeta si se selecciona una guardada
+        const tarjetasRadios = document.querySelectorAll('input[name="usar_tarjeta_guardada"]');
+        tarjetasRadios.forEach(radio => {
+            radio.addEventListener('change', function() {
+                if(numeroTarjetaElement) {
+                    numeroTarjetaElement.style.opacity = '0.5';
+                    numeroTarjetaElement.disabled = true;
+                }
+                if(document.getElementById('nombre_tarjeta')) {
+                    document.getElementById('nombre_tarjeta').style.opacity = '0.5';
+                    document.getElementById('nombre_tarjeta').disabled = true;
+                }
+                if(fechaExpiracionElement) {
+                    fechaExpiracionElement.style.opacity = '0.5';
+                    fechaExpiracionElement.disabled = true;
+                }
+                if(cvvElement) {
+                    cvvElement.style.opacity = '0.5';
+                    cvvElement.disabled = true;
+                }
+            });
         });
+
+        // Si hace clic en un nuevo campo de tarjeta, habilitar campos
+        if(numeroTarjetaElement) {
+            numeroTarjetaElement.addEventListener('focus', function() {
+                document.querySelectorAll('input[name="usar_tarjeta_guardada"]').forEach(r => r.checked = false);
+                numeroTarjetaElement.style.opacity = '1';
+                numeroTarjetaElement.disabled = false;
+                if(document.getElementById('nombre_tarjeta')) {
+                    document.getElementById('nombre_tarjeta').style.opacity = '1';
+                    document.getElementById('nombre_tarjeta').disabled = false;
+                }
+                if(fechaExpiracionElement) {
+                    fechaExpiracionElement.style.opacity = '1';
+                    fechaExpiracionElement.disabled = false;
+                }
+                if(cvvElement) {
+                    cvvElement.style.opacity = '1';
+                    cvvElement.disabled = false;
+                }
+            });
+        }
     </script>
 </body>
 </html>
